@@ -40,6 +40,7 @@ const T_PASTE: usize = 6;
 const T_EDGE: usize = 8;
 const T_PEEK: usize = 9;
 const T_FSCHK: usize = 10;
+pub const T_NUDGE: usize = 18;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -48,14 +49,18 @@ pub enum Page {
     Clipboard,
     Apps,
     Tasks,
+    Notes,
+    Status,
 }
 
-pub const PAGES: [Page; 5] = [
+pub const PAGES: [Page; 7] = [
     Page::Media,
     Page::Controls,
     Page::Clipboard,
     Page::Apps,
     Page::Tasks,
+    Page::Notes,
+    Page::Status,
 ];
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -80,6 +85,12 @@ pub enum Act {
     TodoToggle(usize),
     TodoDel(usize),
     TodoAdd,
+    Snip(usize),
+    SnipEdit,
+    NoteItem(usize),
+    NoteDel(usize),
+    NoteAdd,
+    StatusRefresh,
 }
 
 #[derive(Clone, Copy)]
@@ -188,6 +199,14 @@ pub struct App {
     timer_start: Option<Instant>,
     pub todos: Vec<Todo>,
     pub entering: Option<Vec<u16>>,
+    /// True while the text being typed is a quick note (otherwise a to-do).
+    pub enter_note: bool,
+    pub snippets: Vec<store::Snippet>,
+    pub notes: Vec<store::Note>,
+    pub net: crate::net::Handle,
+    nudge_i: usize,
+    seen_print_state: Option<String>,
+    seen_orders_total: Option<i64>,
     prev_fg: HWND,
     /// Bluetooth device being connected/disconnected: (address, connect?, name).
     pub bt_busy: Option<(u64, bool, String)>,
@@ -262,6 +281,13 @@ impl App {
             timer_start: None,
             todos: store::load_todos(),
             entering: None,
+            enter_note: false,
+            snippets: store::load_snippets(),
+            notes: store::load_notes(),
+            net: crate::net::start(hwnd.0 as isize),
+            nudge_i: 0,
+            seen_print_state: None,
+            seen_orders_total: None,
             prev_fg: HWND::default(),
             bt_busy: None,
             link_phase: 0,
@@ -549,6 +575,10 @@ impl App {
                 self.kill_timer(T_PASTE);
                 sys::send_ctrl_v();
             }
+            T_NUDGE => {
+                self.arm_nudge();
+                self.on_nudge();
+            }
             _ => {}
         }
     }
@@ -820,6 +850,12 @@ impl App {
         if p == Page::Controls {
             self.refresh_controls();
         }
+        if p == Page::Notes {
+            self.snippets = store::load_snippets();
+        }
+        if p == Page::Status {
+            let _ = self.net.tx.send(());
+        }
         self.sync_timers();
         self.render();
     }
@@ -947,6 +983,30 @@ impl App {
                 }
             }
             Act::TodoAdd => self.start_entry(),
+            Act::Snip(i) => {
+                if let Some(sn) = self.snippets.get(i).cloned() {
+                    self.paste_text(sn.text);
+                }
+            }
+            Act::SnipEdit => {
+                let _ = store::load_snippets(); // make sure the file exists
+                sys::open("notepad.exe", &format!("\"{}\"", store::snippets_path().display()));
+            }
+            Act::NoteItem(i) => {
+                if let Some(n) = self.notes.get(i).cloned() {
+                    self.paste_text(n.text);
+                }
+            }
+            Act::NoteDel(i) => {
+                if i < self.notes.len() {
+                    self.notes.remove(i);
+                    store::save_notes(&self.notes);
+                }
+            }
+            Act::NoteAdd => self.begin_entry(true),
+            Act::StatusRefresh => {
+                let _ = self.net.tx.send(());
+            }
         }
     }
 
@@ -989,9 +1049,15 @@ impl App {
         if self.todos.len() >= MAX_TODO {
             return;
         }
+        self.begin_entry(false);
+    }
+
+    /// Start typing a new to-do (`note` = false) or quick note (`note` = true).
+    pub(crate) fn begin_entry(&mut self, note: bool) {
         unsafe {
             self.prev_fg = GetForegroundWindow();
         }
+        self.enter_note = note;
         self.entering = Some(Vec::new());
         self.make_activatable(true);
         unsafe {
@@ -1007,7 +1073,17 @@ impl App {
             return;
         };
         self.make_activatable(false);
-        if commit {
+        if commit && self.enter_note {
+            let s = String::from_utf16_lossy(&buf).trim().to_string();
+            if !s.is_empty() {
+                let (y, mo, d, _, h, mi, ..) = sys::local_time();
+                self.notes.insert(
+                    0,
+                    store::Note { stamp: format!("{:04}-{:02}-{:02} {:02}:{:02}", y, mo, d, h, mi), text: s },
+                );
+                store::save_notes(&self.notes);
+            }
+        } else if commit {
             let s = String::from_utf16_lossy(&buf).trim().to_string();
             if !s.is_empty() && self.todos.len() < MAX_TODO {
                 self.todos.push(Todo {
@@ -1031,6 +1107,7 @@ impl App {
             Cancel,
             Redraw,
         }
+        let cap = if self.enter_note { 200 } else { 80 };
         let d = {
             let Some(buf) = self.entering.as_mut() else {
                 return;
@@ -1042,7 +1119,7 @@ impl App {
                     buf.pop();
                     Do::Redraw
                 }
-                c if c >= 0x20 && buf.len() < 80 => {
+                c if c >= 0x20 && buf.len() < cap => {
                     buf.push(c);
                     Do::Redraw
                 }
@@ -1115,8 +1192,113 @@ impl App {
 
     pub fn reload_apps(&mut self) {
         self.apps = store::load_apps();
+        self.snippets = store::load_snippets();
         self.load_app_icons();
         self.render();
+    }
+
+    /// Put `t` on the clipboard and paste it into the app that had focus.
+    fn paste_text(&mut self, t: String) {
+        self.ignore_clip = Some(t.clone());
+        if sys::set_clipboard_text(self.hwnd, &t) {
+            self.pinned = false;
+            self.set_expanded(false);
+            // give the target window a moment to regain input focus
+            self.set_timer(T_PASTE, 170);
+        }
+    }
+
+    /// Ctrl+Alt+Q: open the Notes page with a new note ready to type.
+    pub fn quick_note(&mut self) {
+        if self.entering.is_some() {
+            return;
+        }
+        if self.tucked {
+            self.tucked = false;
+            self.on_foreground();
+        }
+        self.page = Page::Notes;
+        self.snippets = store::load_snippets();
+        self.pinned = true;
+        if !self.expanded {
+            self.set_expanded(true);
+        }
+        self.begin_entry(true);
+        self.render();
+    }
+
+    /// New data from the printer / store feeds (see net.rs).
+    pub fn on_net(&mut self) {
+        let (print, orders) = {
+            let s = self.net.state.lock().unwrap();
+            (s.print.clone(), s.orders.clone())
+        };
+        let mut say: Option<(String, bool)> = None;
+        match &print {
+            Some(p) => {
+                let was = self.seen_print_state.replace(p.state.clone());
+                if let Some(w) = was {
+                    let active = |s: &str| matches!(s, "RUNNING" | "PREPARE" | "PAUSE" | "SLICING");
+                    if active(&w) && p.state == "FINISH" {
+                        say = Some(("Print done!".into(), true));
+                    } else if active(&w) && p.state == "FAILED" {
+                        say = Some(("Print failed!".into(), false));
+                    }
+                }
+            }
+            None => self.seen_print_state = None,
+        }
+        if let Some(o) = &orders {
+            if let Some(prev) = self.seen_orders_total {
+                if o.total > prev {
+                    let n = o.total - prev;
+                    say = Some((if n == 1 { "New order!".to_string() } else { format!("{} new orders!", n) }, true));
+                }
+            }
+            self.seen_orders_total = Some(o.total);
+        } else {
+            self.seen_orders_total = None;
+        }
+        if let Some((t, cheer)) = say {
+            self.buddy_event(crate::buddy::BuddyEv::Say(t, cheer));
+        }
+        if self.expanded && self.page == Page::Status && self.anim_ms == 0 {
+            self.render();
+        }
+    }
+
+    // ---------------------------------------------------- break reminders --
+
+    pub fn arm_nudge(&self) {
+        if self.cfg.nudge_min > 0 {
+            self.set_timer(T_NUDGE, self.cfg.nudge_min as u32 * 60_000);
+        } else {
+            self.kill_timer(T_NUDGE);
+        }
+    }
+
+    pub fn toggle_nudge(&mut self) {
+        self.cfg.nudge_min = if self.cfg.nudge_min == 0 { 45 } else { 0 };
+        store::save_config(&self.cfg);
+        self.arm_nudge();
+    }
+
+    fn on_nudge(&mut self) {
+        const MSGS: [&str; 6] = [
+            "Drink some water",
+            "Stand up, stretch",
+            "Rest your eyes",
+            "Sit up straight",
+            "Deep breath",
+            "Walk a little",
+        ];
+        let (_, _, _, _, hh, ..) = sys::local_time();
+        if hh >= 23 || hh < 7 || self.scene_active() {
+            return;
+        }
+        let m = MSGS[self.nudge_i % MSGS.len()];
+        self.nudge_i += 1;
+        self.buddy_event(crate::buddy::BuddyEv::Say(m.into(), false));
     }
 
     pub fn on_clipboard(&mut self) {

@@ -65,16 +65,33 @@ Nock is not code-signed yet, so Windows 11 machines with **Smart App Control** s
 
 A tiny original character lives on the top bar, in the free stretch between the notch and the status icons. It naps most of the time and wakes up for short outings, so it costs almost nothing:
 
+- **Reminds you to take breaks**: every 45 minutes (tray → *Break reminders*, or `nudge_min=` in `config.ini`, 0 = off) it says things like "Drink some water" or "Stand up, stretch". Quiet between 11pm and 7am.
 - **Strolls** along the bar every minute or so, then goes back to sleep.
 - **Dances** when music starts playing.
-- **Follows your pointer** when you move it over that part of the bar, and its eyes follow the cursor. Click it to pet it.
+- **Follows your pointer** when you move it over that part of the bar, and its eyes follow the cursor. Click it to pet it (it hops and plays a short sound, different for each character).
 - **Cheers** when the focus timer ends, and says "Connected!" or "Oops" after a Wi-Fi / Bluetooth attempt, "Low battery" when the battery runs low, and "Bedtime?" late at night.
 
-Pick the character from the tray menu → **Buddy**: Kitty (default), Blob, Bunny, Hero or Robot, or Off. It is also the `buddy` setting in `config.ini` (0 = off, 1 blob, 2 cat, 3 bunny, 4 hero, 5 robot). The characters are drawn from simple shapes in code, so there are no image files. It hides together with the bar in full screen.
+Pick the character from the tray menu → **Buddy**: Kitty (default), Blob, Bunny, Hero or Robot, or Off. It is also the `buddy` setting in `config.ini` (0 = off, 1 blob, 2 cat, 3 bunny, 4 hero, 5 robot, 6 ronin, 7 courier, 8 necromancer, 9 smiling man, 10 amit). The characters are drawn from simple shapes in code, so there are no image files. It hides together with the bar in full screen.
 
 ### Pixel characters
 
 Three more characters are drawn as detailed pixel art and **talk** in character as they stroll: **Ronin** (a rain-worn samurai: "Patience.", "One cut."), **Courier** (a neon hoverboard runner: "Delivery's late. Again.") and **Necromancer** ("Death is a pause."). Pick them in the tray menu → **Buddy** (`buddy=6`, `7` or `8` in `config.ini`). They also star in three of the scenes below.
+
+A fourth buddy, the **Smiling Man** (`buddy=9`), is just a face, a pixel-art portrait that strolls, bobs to music, hops when clicked and says things like "Namaste!" and "Chai break?". **Amit** (`buddy=10`) is a second face-only buddy.
+
+### Notes and snippets
+
+The **Notes** page (pencil tab) has two halves:
+
+- **Snippets** (left): pinned bits of text you type a lot (replies, sign-offs, addresses). Click one to paste it into the app you were using. Click *Edit* to change them in Notepad: one per line as `Name|text to paste`, with `\n` for a line break (file: `snippets.txt` in the settings folder, first 5 are shown).
+- **Quick notes** (right): press **Ctrl+Alt+Q** from anywhere, type, press Enter. The note is saved with the time in `notes.txt`. The latest four are listed; click one to paste it, or the cross to delete it.
+
+### Status: 3D printer and store orders
+
+The **Status** page (printer tab) shows two optional live feeds. Both are off until you set an address in `config.ini` (tray → Open settings folder), and nothing runs in the background while they are empty. The buddy reacts too: "Print done!", "Print failed!" and "New order!".
+
+- **Printer** (`print_url=`): the address of the bedswap agent's status feed, e.g. `http://100.64.0.5:8765/status` (use the Tailscale address when the agent runs on another machine). Shows state, job, progress, time left, layer and temperatures.
+- **Store** (`orders_url=` and `orders_key=`): the House of Madese `/api/orders-summary` endpoint and the `NOCK_KEY` secret set on the store. Shows today's orders, the total and the latest order. The key is kept in `config.ini` in plain text, so only use a key made for this.
 
 ### Fight scenes
 
@@ -90,6 +107,7 @@ The first scene plays a minute or two after Nock starts, then one every few minu
 | Chevron (top-right) | Collapses it |
 | Mouse wheel over the pill | Scroll down opens it |
 | Mouse wheel over the bottom tab bar | Switches pages |
+| `Ctrl+Alt+Q` | Opens the Notes page with a new quick note ready to type |
 | `Ctrl+Alt+H` / tray → *Hide notch* | Tucks the notch away completely; press again (or `Ctrl+Alt+N`, or click the tray icon) to bring it back |
 | Tray icon | Start with Windows, reserve screen space, edit/reload pinned apps, open settings folder, quit |
 
@@ -99,6 +117,8 @@ Pages (bottom tab bar):
 - **Controls**: volume slider + mute, brightness slider, and screenshot (Snipping Tool), lock and sleep.
 - **Clipboard**: the last 20 things you copied. Click one to paste it into the app you were using. History lives in memory only (never written to disk), and copies from password managers are skipped.
 - **Apps**: pinned launcher tiles with the real app icons.
+- **Notes**: pinned snippets and quick notes (see above).
+- **Status**: 3D printer and store order feeds (see above).
 - **Tasks**: focus timer (5/15/25/50 min presets; a running timer shows in the pill; when it finishes you get three beeps and the pill pulses "Time's up" for 30 s, or until you click it), a 5-item to-do list (saved to disk), and a month calendar.
 
 ## Icon

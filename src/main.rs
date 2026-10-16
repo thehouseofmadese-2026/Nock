@@ -3,12 +3,14 @@
 mod app;
 mod bar;
 mod buddy;
+mod face;
 mod cast;
 mod pixdata;
 mod scene;
 mod gfx;
 mod pop;
 mod media;
+mod net;
 mod radio;
 mod store;
 mod sys;
@@ -174,6 +176,7 @@ fn main() -> Result<()> {
             let mon_w = a.mon.right - a.mon.left;
             a.bar = bar::Bar::new(bar_hwnd, mon_w, a.scale);
             a.pop = pop::Pop::new(pop_hwnd, a.scale);
+            a.arm_nudge();
         }
 
         let _ = AddClipboardFormatListener(hwnd);
@@ -188,6 +191,12 @@ fn main() -> Result<()> {
             2,
             MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
             'H' as u32,
+        );
+        let _ = RegisterHotKey(
+            Some(hwnd),
+            3,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            'Q' as u32,
         );
         let _ = SetWinEventHook(
             EVENT_SYSTEM_FOREGROUND,
@@ -295,6 +304,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_HOTKEY => {
             if wp.0 == 2 {
                 a.toggle_tucked()
+            } else if wp.0 == 3 {
+                a.quick_note()
             } else {
                 a.toggle_pinned_open()
             }
@@ -308,6 +319,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         }
         m if m == media::WM_MEDIA => a.on_media(),
         m if m == radio::WM_RADIO => a.on_radio(),
+        m if m == net::WM_NET => a.on_net(),
         m if m == radio::WM_BTDONE => a.on_bt_done(wp.0 != 0),
         m if m == sys::WM_POP => a.on_pop_data(),
         m if m == sys::WM_EDGE => a.on_edge(),
@@ -399,6 +411,8 @@ fn on_tray(hwnd: HWND, a: &mut App, lp: LPARAM) {
             let _ = AppendMenuW(sub, MF_STRING | mark(6), 26, w!("Ronin (pixel, talks)"));
             let _ = AppendMenuW(sub, MF_STRING | mark(7), 27, w!("Courier (pixel, talks)"));
             let _ = AppendMenuW(sub, MF_STRING | mark(8), 28, w!("Necromancer (pixel, talks)"));
+            let _ = AppendMenuW(sub, MF_STRING | mark(9), 29, w!("Smiling Man (face)"));
+            let _ = AppendMenuW(sub, MF_STRING | mark(10), 37, w!("Amit (face)"));
             let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Buddy"));
         }
         if let Ok(sub) = CreatePopupMenu() {
@@ -413,6 +427,8 @@ fn on_tray(hwnd: HWND, a: &mut App, lp: LPARAM) {
             let _ = AppendMenuW(sub, MF_STRING, 36, w!("Play: Alley fight"));
             let _ = AppendMenuW(menu, MF_POPUP, sub.0 as usize, w!("Fight scenes"));
         }
+        let nd = if a.cfg.nudge_min > 0 { MF_CHECKED } else { MF_UNCHECKED };
+        let _ = AppendMenuW(menu, MF_STRING | nd, 38, w!("Break reminders (needs a buddy)"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let _ = AppendMenuW(menu, MF_STRING | auto, 1, w!("Start with Windows"));
         let _ = AppendMenuW(menu, MF_STRING, 2, w!("Edit pinned apps"));
@@ -447,7 +463,9 @@ fn on_tray(hwnd: HWND, a: &mut App, lp: LPARAM) {
             6 => a.toggle_reserve(),
             7 => a.toggle_top_bar(),
             4 => sys::open(&store::data_dir().to_string_lossy(), ""),
-            20..=28 => a.set_buddy((cmd.0 - 20) as u8),
+            20..=29 => a.set_buddy((cmd.0 - 20) as u8),
+            37 => a.set_buddy(10),
+            38 => a.toggle_nudge(),
             30 => a.toggle_scenes(),
             31..=36 => a.play_scene((cmd.0 - 31) as usize),
             9 => {

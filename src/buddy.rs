@@ -37,6 +37,8 @@ pub enum BuddyKind {
     Ronin,
     Courier,
     Necro,
+    Man,
+    Amit,
 }
 
 impl BuddyKind {
@@ -55,12 +57,14 @@ impl BuddyKind {
             BuddyKind::Ronin => &["Patience.", "The blade is quiet.", "One cut.", "Rain will come.", "Breathe.", "Hm."],
             BuddyKind::Courier => &["Delivery's late. Again.", "Not my problem.", "Neon never sleeps.", "Fast lane.", "Tip me.", "Zero ping."],
             BuddyKind::Necro => &["Rise.", "Death is a pause.", "Mind the bones.", "Souls. So many.", "Hush...", "Not dead yet?"],
+            BuddyKind::Man => &["Namaste!", "Chai break?", "All good.", "Let's talk.", "Keep smiling.", "On it!"],
+            BuddyKind::Amit => &["Hello.", "Hmm.", "Listen.", "Well done.", "Yes?", "Carry on."],
             _ => return None,
         };
         Some(list[(r as usize) % list.len()])
     }
 
-    /// 1..=5 as stored in config.ini (0 means off).
+    /// 1..=10 as stored in config.ini (0 means off).
     pub fn from_id(id: u8) -> Option<BuddyKind> {
         match id {
             1 => Some(BuddyKind::Blob),
@@ -71,6 +75,8 @@ impl BuddyKind {
             6 => Some(BuddyKind::Ronin),
             7 => Some(BuddyKind::Courier),
             8 => Some(BuddyKind::Necro),
+            9 => Some(BuddyKind::Man),
+            10 => Some(BuddyKind::Amit),
             _ => None,
         }
     }
@@ -90,6 +96,8 @@ pub enum BuddyEv {
     TimerDone,
     MusicStarted,
     Result(bool),
+    /// A short message from outside (reminders, print and order alerts); `true` = cheer.
+    Say(String, bool),
 }
 
 pub struct Buddy {
@@ -234,7 +242,7 @@ impl App {
         }
     }
 
-    /// Tray menu: 0 = off, 1..=5 = character.
+    /// Tray menu: 0 = off, 1..=10 = character.
     pub fn set_buddy(&mut self, id: u8) {
         self.cfg.buddy = id;
         crate::store::save_config(&self.cfg);
@@ -423,12 +431,14 @@ impl App {
     pub fn buddy_click(&mut self, px: f32, py: f32) -> bool {
         let now = Instant::now();
         let Some(b) = self.buddy.as_mut() else { return false };
+        let kind = b.kind;
         if !b.shown || (px - b.x).abs() > 13.0 || !(3.0..=29.0).contains(&py) {
             return false;
         }
         b.mode = Mode::Hop;
         b.until = now + ms(1100);
         b.bubble = Some(("\u{2665}".into(), now + ms(1800)));
+        play_click(kind);
         self.buddy_start_anim();
         true
     }
@@ -472,6 +482,18 @@ impl App {
                 b.mode = Mode::Dance;
                 b.until = now + ms(5000);
                 b.bubble = Some(("\u{266A}".into(), now + ms(5000)));
+            }
+            BuddyEv::Say(text, cheer) => {
+                if cheer {
+                    b.mode = Mode::Cheer;
+                    b.until = now + ms(5000);
+                } else if matches!(b.mode, Mode::Sleep) {
+                    b.mode = Mode::Idle;
+                    b.until = now + ms(6500);
+                } else if b.mode == Mode::Idle {
+                    b.until = now + ms(6500);
+                }
+                b.bubble = Some((text, now + ms(if cheer { 5000 } else { 6500 })));
             }
             BuddyEv::Result(ok) => {
                 if ok {
@@ -533,7 +555,9 @@ impl App {
         if g.begin(pw, ph).is_err() {
             return;
         }
-        if let Some(who) = b.kind.pixel_who() {
+        if matches!(b.kind, BuddyKind::Man | BuddyKind::Amit) {
+            draw_face(g, b.kind, b.mode, b.tick);
+        } else if let Some(who) = b.kind.pixel_who() {
             let act = match b.mode {
                 Mode::Sleep => cast::Act::Crouch,
                 Mode::Idle => cast::Act::Stand,
@@ -572,7 +596,102 @@ impl App {
     }
 }
 
+// -------------------------------------------------------------------- sound --
+
+/// Notes (Hz) for the click sound of each character: a short synthesised chirp,
+/// so there are no audio files.
+fn click_notes(kind: BuddyKind) -> &'static [f32] {
+    match kind {
+        BuddyKind::Man => &[660.0, 880.0, 1100.0],
+        BuddyKind::Amit => &[196.0, 147.0],
+        BuddyKind::Cat => &[900.0, 1300.0],
+        BuddyKind::Bunny => &[1000.0, 1250.0],
+        BuddyKind::Robot => &[500.0, 900.0, 500.0],
+        BuddyKind::Ronin => &[330.0, 247.0],
+        BuddyKind::Necro => &[220.0, 165.0, 110.0],
+        _ => &[700.0, 1000.0],
+    }
+}
+
+/// 16-bit mono WAV of the notes, each a decaying sine of about 90 ms.
+fn click_wav(kind: BuddyKind) -> Vec<u8> {
+    const RATE: u32 = 22_050;
+    let per = (RATE as f32 * 0.09) as usize;
+    let mut pcm: Vec<i16> = Vec::new();
+    for f in click_notes(kind) {
+        for i in 0..per {
+            let t = i as f32 / RATE as f32;
+            let env = (1.0 - i as f32 / per as f32).powf(1.5) * (i as f32 / 60.0).min(1.0);
+            let v = (t * f * std::f32::consts::TAU).sin() * 0.5 + (t * f * 2.0 * std::f32::consts::TAU).sin() * 0.12;
+            pcm.push((v * env * 0.6 * i16::MAX as f32) as i16);
+        }
+    }
+    let data = (pcm.len() * 2) as u32;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes());
+    w.extend_from_slice(&RATE.to_le_bytes());
+    w.extend_from_slice(&(RATE * 2).to_le_bytes());
+    w.extend_from_slice(&2u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    for s in pcm {
+        w.extend_from_slice(&s.to_le_bytes());
+    }
+    w
+}
+
+/// Play the click sound (asynchronously; the buffers are kept alive for good).
+fn play_click(kind: BuddyKind) {
+    use std::sync::OnceLock;
+    use windows::core::PCWSTR;
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
+    const KINDS: [BuddyKind; 10] = [
+        BuddyKind::Blob, BuddyKind::Cat, BuddyKind::Bunny, BuddyKind::Hero, BuddyKind::Robot,
+        BuddyKind::Ronin, BuddyKind::Courier, BuddyKind::Necro, BuddyKind::Man, BuddyKind::Amit,
+    ];
+    static CACHE: OnceLock<Vec<Vec<u8>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| KINDS.iter().map(|k| click_wav(*k)).collect());
+    let Some(i) = KINDS.iter().position(|k| *k == kind) else { return };
+    unsafe {
+        let _ = PlaySoundW(PCWSTR(cache[i].as_ptr() as *const u16), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    }
+}
+
 // ------------------------------------------------------------------ drawing --
+
+/// The face buddies (Smiling Man, Amit) are just a portrait as pixel art,
+/// bobbing a little while they move.
+fn draw_face(g: &Gfx, kind: BuddyKind, mode: Mode, tick: u32) {
+    use crate::face::{FACE, FACE_AMIT, H, W};
+    let face: &[u32] = if kind == BuddyKind::Amit { &FACE_AMIT } else { &FACE };
+    let t = tick as f32;
+    let bob = match mode {
+        Mode::Sleep => 0.0,
+        Mode::Idle => (t * 0.2).sin() * 0.5,
+        Mode::Walk => (t * 0.85).sin().abs() * 1.5,
+        Mode::Dance | Mode::Cheer => (t * 0.7).sin().abs() * 2.5,
+        Mode::Hop => ((t * 0.45).min(std::f32::consts::PI)).sin() * 3.0,
+    };
+    let x0 = SPR_X - W as f32 / 2.0;
+    let y0 = 2.0 - bob.max(0.0) * 0.5 + 0.5;
+    for row in 0..H {
+        for col in 0..W {
+            let v = face[row * W + col];
+            let a = (v >> 24) as f32 / 255.0;
+            if a < 0.05 {
+                continue;
+            }
+            let c = Color(((v >> 16) & 255) as f32 / 255.0, ((v >> 8) & 255) as f32 / 255.0, (v & 255) as f32 / 255.0, a);
+            g.fill_rrect(Rect::new(x0 + col as f32, y0 + row as f32 - bob.max(0.0), 1.02, 1.02), 0.0, c);
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Eyes {
@@ -663,7 +782,7 @@ fn palette(kind: BuddyKind) -> (Color, Color) {
         BuddyKind::Bunny => (Color(0.97, 0.94, 0.97, 1.0), Color(0.82, 0.76, 0.84, 1.0)),
         BuddyKind::Hero => (Color(0.18, 0.70, 0.76, 1.0), Color(0.1, 0.5, 0.58, 1.0)),
         BuddyKind::Robot => (Color(0.74, 0.8, 0.9, 1.0), Color(0.5, 0.57, 0.7, 1.0)),
-        BuddyKind::Ronin | BuddyKind::Courier | BuddyKind::Necro => (Color(0.5, 0.5, 0.5, 1.0), Color(0.3, 0.3, 0.3, 1.0)),
+        BuddyKind::Ronin | BuddyKind::Courier | BuddyKind::Necro | BuddyKind::Man | BuddyKind::Amit => (Color(0.5, 0.5, 0.5, 1.0), Color(0.3, 0.3, 0.3, 1.0)),
     }
 }
 
@@ -796,7 +915,7 @@ fn draw_sprite(g: &Gfx, kind: BuddyKind, p: &Pose, mode: Mode, tick: u32) {
             g.line((cx, hy - 7.5), (cx + 1.0, hy - 9.0), 1.1, Color(0.35, 0.7, 0.4, 1.0));
             g.fill_circle(cx + 2.2, hy - 9.3, 1.5, Color(0.45, 0.82, 0.5, 1.0));
         }
-        BuddyKind::Hero | BuddyKind::Ronin | BuddyKind::Courier | BuddyKind::Necro => {}
+        BuddyKind::Hero | BuddyKind::Ronin | BuddyKind::Courier | BuddyKind::Necro | BuddyKind::Man | BuddyKind::Amit => {}
     }
 
     // head

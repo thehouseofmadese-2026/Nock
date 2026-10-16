@@ -48,6 +48,13 @@ pub struct Config {
     pub scenes: bool,
     /// Average minutes between automatic scenes.
     pub scene_min: u8,
+    /// Minutes between the buddy's break reminders (0 = off).
+    pub nudge_min: u16,
+    /// Printer status feed served by the bedswap agent (empty = off).
+    pub print_url: String,
+    /// House of Madese order feed (empty = off) and its shared secret.
+    pub orders_url: String,
+    pub orders_key: String,
 }
 
 const DEFAULT_CONFIG: &str = "\
@@ -57,12 +64,19 @@ eq_animation=1
 clock_24h=0
 reserve_space=0
 top_bar=1
-# buddy: 0 = off, 1 = blob, 2 = cat, 3 = bunny, 4 = hero, 5 = robot, 6 = ronin, 7 = courier, 8 = necromancer
+# buddy: 0 = off, 1 = blob, 2 = cat, 3 = bunny, 4 = hero, 5 = robot, 6 = ronin, 7 = courier, 8 = necromancer, 9 = smiling man, 10 = amit
 buddy=2
 # fight scenes now and then (needs a buddy): 1 = on
 scenes=1
 # average minutes between scenes (1 to 60)
 scene_min=5
+# break reminders from the buddy: minutes between nudges (0 = off)
+nudge_min=45
+# printer status feed from the bedswap agent, e.g. http://100.64.0.5:8765/status (empty = off)
+print_url=
+# House of Madese order feed (empty = off); orders_key is the NOCK_KEY set on the store
+orders_url=
+orders_key=
 ";
 
 pub fn load_config() -> Config {
@@ -83,6 +97,10 @@ pub fn load_config() -> Config {
         buddy: 2,
         scenes: true,
         scene_min: 5,
+        nudge_min: 45,
+        print_url: String::new(),
+        orders_url: String::new(),
+        orders_key: String::new(),
     };
     for line in text.lines() {
         let line = line.trim();
@@ -99,14 +117,18 @@ pub fn load_config() -> Config {
                 "top_bar" => cfg.top_bar = on,
                 "scenes" => cfg.scenes = on,
                 "scene_min" => cfg.scene_min = v.trim().parse::<u8>().unwrap_or(5).clamp(1, 60),
-                "buddy" => cfg.buddy = v.trim().parse::<u8>().unwrap_or(2).min(8),
+                "nudge_min" => cfg.nudge_min = v.trim().parse::<u16>().unwrap_or(45).min(600),
+                "print_url" => cfg.print_url = v.trim().to_string(),
+                "orders_url" => cfg.orders_url = v.trim().to_string(),
+                "orders_key" => cfg.orders_key = v.trim().to_string(),
+                "buddy" => cfg.buddy = v.trim().parse::<u8>().unwrap_or(2).min(10),
                 _ => {}
             }
         }
     }
     // A config file from an older version lacks the newer settings: write the
     // file back with every setting present (keeping the user's values).
-    let keys = ["hover_expand", "eq_animation", "clock_24h", "reserve_space", "top_bar", "buddy", "scenes", "scene_min"];
+    let keys = ["hover_expand", "eq_animation", "clock_24h", "reserve_space", "top_bar", "buddy", "scenes", "scene_min", "nudge_min", "print_url", "orders_url", "orders_key"];
     let present = |k: &str| text.lines().any(|l| l.trim().split_once('=').map(|(a, _)| a.trim() == k).unwrap_or(false));
     if keys.iter().any(|k| !present(k)) {
         save_config(&cfg);
@@ -117,7 +139,7 @@ pub fn load_config() -> Config {
 pub fn save_config(c: &Config) {
     let b = |v: bool| if v { 1 } else { 0 };
     let text = format!(
-        "# Nock settings (1 = on, 0 = off)\nhover_expand={}\neq_animation={}\nclock_24h={}\nreserve_space={}\ntop_bar={}\n# buddy: 0 = off, 1 = blob, 2 = cat, 3 = bunny, 4 = hero, 5 = robot, 6 = ronin, 7 = courier, 8 = necromancer\nbuddy={}\n# fight scenes now and then (needs a buddy): 1 = on\nscenes={}\n# average minutes between scenes (1 to 60)\nscene_min={}\n",
+        "# Nock settings (1 = on, 0 = off)\nhover_expand={}\neq_animation={}\nclock_24h={}\nreserve_space={}\ntop_bar={}\n# buddy: 0 = off, 1 = blob, 2 = cat, 3 = bunny, 4 = hero, 5 = robot, 6 = ronin, 7 = courier, 8 = necromancer, 9 = smiling man, 10 = amit\nbuddy={}\n# fight scenes now and then (needs a buddy): 1 = on\nscenes={}\n# average minutes between scenes (1 to 60)\nscene_min={}\n# break reminders from the buddy: minutes between nudges (0 = off)\nnudge_min={}\n# printer status feed from the bedswap agent, e.g. http://100.64.0.5:8765/status (empty = off)\nprint_url={}\n# House of Madese order feed (empty = off); orders_key is the NOCK_KEY set on the store\norders_url={}\norders_key={}\n",
         b(c.hover_expand),
         b(c.eq_animation),
         b(c.clock_24h),
@@ -125,7 +147,11 @@ pub fn save_config(c: &Config) {
         b(c.top_bar),
         c.buddy,
         b(c.scenes),
-        c.scene_min
+        c.scene_min,
+        c.nudge_min,
+        c.print_url,
+        c.orders_url,
+        c.orders_key
     );
     let _ = fs::write(data_dir().join("config.ini"), text);
 }
@@ -208,4 +234,89 @@ pub fn save_todos(todos: &[Todo]) {
         s.push('\n');
     }
     let _ = fs::write(data_dir().join("todos.txt"), s);
+}
+
+// ---------------------------------------------------------------- snippets
+
+#[derive(Clone)]
+pub struct Snippet {
+    pub name: String,
+    pub text: String,
+}
+
+pub fn snippets_path() -> PathBuf {
+    data_dir().join("snippets.txt")
+}
+
+const DEFAULT_SNIPPETS: &str = "\
+# Pinned snippets for the Notes page. One per line:  Name|text to paste
+# Write \\n for a line break. The first 5 entries are shown. After editing,
+# reopen the panel (or use tray -> Reload pinned apps).
+Thanks|Thanks, I'll get back to you shortly.
+On my way|On my way, back in a few minutes.
+Sign-off|Thanks and regards
+";
+
+pub fn load_snippets() -> Vec<Snippet> {
+    let path = snippets_path();
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(_) => {
+            let _ = fs::write(&path, DEFAULT_SNIPPETS);
+            DEFAULT_SNIPPETS.to_string()
+        }
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let (name, body) = l.split_once('|')?;
+            let (name, body) = (name.trim(), body.trim());
+            if name.is_empty() || body.is_empty() {
+                return None;
+            }
+            Some(Snippet {
+                name: name.to_string(),
+                text: body.replace("\\n", "\r\n"),
+            })
+        })
+        .take(5)
+        .collect()
+}
+
+// ------------------------------------------------------------------- notes
+
+#[derive(Clone)]
+pub struct Note {
+    pub stamp: String,
+    pub text: String,
+}
+
+const MAX_NOTES: usize = 100;
+
+/// Newest first.
+pub fn load_notes() -> Vec<Note> {
+    let mut v: Vec<Note> = fs::read_to_string(data_dir().join("notes.txt"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| {
+            let (stamp, text) = l.split_once('|')?;
+            Some(Note { stamp: stamp.to_string(), text: text.to_string() })
+        })
+        .collect();
+    v.reverse();
+    v
+}
+
+/// `notes` is newest first (as returned by `load_notes`).
+pub fn save_notes(notes: &[Note]) {
+    let mut s = String::new();
+    for n in notes.iter().take(MAX_NOTES).rev() {
+        s.push_str(&n.stamp);
+        s.push('|');
+        s.push_str(&n.text.replace(['\n', '\r'], " "));
+        s.push('\n');
+        s.push_str("");
+    }
+    let _ = fs::write(data_dir().join("notes.txt"), s);
 }

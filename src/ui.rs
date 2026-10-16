@@ -203,12 +203,15 @@ fn draw_expanded(a: &App, ca: f32, hits: &mut Vec<Hit>) {
         Page::Clipboard => page_clipboard(a, ca, hits),
         Page::Apps => page_apps(a, ca, hits),
         Page::Tasks => page_tasks(a, ca, hits),
+        Page::Notes => page_notes(a, ca, hits),
+        Page::Status => page_status(a, ca, hits),
     }
 
     // tab bar
-    let icons = ['\u{E768}', '\u{E713}', '\u{E77F}', '\u{E71D}', '\u{E73A}'];
+    let icons = ['\u{E768}', '\u{E713}', '\u{E77F}', '\u{E71D}', '\u{E73A}', '\u{E70F}', '\u{E749}'];
     let (tw, th, gap) = (52.0, 32.0, 8.0);
-    let x0 = (EXP_W - (5.0 * tw + 4.0 * gap)) / 2.0;
+    let n = PAGES.len() as f32;
+    let x0 = (EXP_W - (n * tw + (n - 1.0) * gap)) / 2.0;
     let y0 = EXP_H - 46.0;
     for (i, p) in PAGES.iter().enumerate() {
         let r = Rect::new(x0 + i as f32 * (tw + gap), y0, tw, th);
@@ -807,6 +810,277 @@ fn page_tasks(a: &App, ca: f32, hits: &mut Vec<Hit>) {
 
     // ---- calendar
     draw_calendar(a, ca);
+}
+
+// ----------------------------------------------------------------- notes ----
+
+/// First `n` characters of `s` (one line), with an ellipsis if it was cut.
+fn trunc(s: &str, n: usize) -> String {
+    let one: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > n {
+        let mut t: String = one.chars().take(n.saturating_sub(1)).collect();
+        t.push('\u{2026}');
+        t
+    } else {
+        one
+    }
+}
+
+/// Snippets (click to paste) on the left, quick notes on the right.
+fn page_notes(a: &App, ca: f32, hits: &mut Vec<Hit>) {
+    let g = &a.gfx;
+    let f = &g.fonts;
+
+    // ---- snippets
+    g.text("Snippets", Rect::new(28.0, 12.0, 150.0, 22.0), &f.small, T3.fade(ca), Align::Left);
+    let eb = Rect::new(150.0, 12.0, 60.0, 22.0);
+    hits.push(Hit { r: eb, act: Act::SnipEdit });
+    if hot(a, Act::SnipEdit) {
+        g.fill_rrect(eb, 11.0, Color::white(0.10 * ca));
+    }
+    g.text("Edit", eb, &f.small, T2.fade(ca), Align::Center);
+    if a.snippets.is_empty() {
+        g.text(
+            "No snippets yet. Click Edit to add some.",
+            Rect::new(28.0, 50.0, 200.0, 40.0),
+            &f.small,
+            T3.fade(ca),
+            Align::Left,
+        );
+    }
+    for (i, sn) in a.snippets.iter().enumerate() {
+        let r = Rect::new(24.0, 38.0 + i as f32 * 29.0, 208.0, 26.0);
+        let act = Act::Snip(i);
+        hits.push(Hit { r, act });
+        if hot(a, act) {
+            g.fill_rrect(r, 10.0, Color::white(0.12 * ca));
+        } else if i % 2 == 0 {
+            g.fill_rrect(r, 10.0, Color::white(0.04 * ca));
+        }
+        g.text(&trunc(&sn.name, 10), Rect::new(r.x + 10.0, r.y, 80.0, r.h), &f.small, T1.fade(ca), Align::Left);
+        g.text(
+            &trunc(&sn.text, 14),
+            Rect::new(r.x + 88.0, r.y, r.w - 94.0, r.h),
+            &f.tiny,
+            T3.fade(ca),
+            Align::Left,
+        );
+    }
+
+    // ---- quick notes
+    let tx = 372.0;
+    let tw = 200.0;
+    g.text("Quick notes", Rect::new(tx, 12.0, 120.0, 22.0), &f.small, T3.fade(ca), Align::Left);
+    g.text("Ctrl+Alt+Q", Rect::new(tx + tw - 80.0, 12.0, 80.0, 22.0), &f.tiny, T3.fade(ca * 0.8), Align::Right);
+    let shown = a.notes.len().min(4);
+    for (i, n) in a.notes.iter().take(4).enumerate() {
+        let y = 38.0 + i as f32 * 28.0;
+        let row = Rect::new(tx, y, tw, 26.0);
+        let del = Rect::new(tx + tw - 24.0, y, 24.0, 26.0);
+        hits.push(Hit { r: Rect::new(tx, y, tw - 24.0, 26.0), act: Act::NoteItem(i) });
+        hits.push(Hit { r: del, act: Act::NoteDel(i) });
+        let over = hot(a, Act::NoteItem(i)) || hot(a, Act::NoteDel(i));
+        if over {
+            g.fill_rrect(row, 9.0, Color::white(0.07 * ca));
+        }
+        g.text(&trunc(&n.text, 26), Rect::new(tx + 8.0, y, tw - 36.0, 26.0), &f.small, T1.fade(ca), Align::Left);
+        g.icon(
+            '\u{E711}',
+            del,
+            &f.icon14,
+            (if hot(a, Act::NoteDel(i)) { T1 } else { T3 }).fade(ca * if over { 1.0 } else { 0.0 }),
+        );
+    }
+    let y = 38.0 + shown as f32 * 28.0;
+    if let (Some(buf), true) = (&a.entering, a.enter_note) {
+        let r = Rect::new(tx, y, tw, 26.0);
+        g.fill_rrect(r, 9.0, Color::white(0.14 * ca));
+        let chars: Vec<char> = String::from_utf16_lossy(buf).chars().collect();
+        let tail: String = chars[chars.len().saturating_sub(26)..].iter().collect();
+        g.text(
+            &format!("{}\u{2502}", tail),
+            Rect::new(r.x + 10.0, r.y, r.w - 16.0, r.h),
+            &f.small,
+            T1.fade(ca),
+            Align::Left,
+        );
+        g.text(
+            "Enter to save \u{00B7} Esc to cancel",
+            Rect::new(tx, y + 28.0, tw, 18.0),
+            &f.tiny,
+            T3.fade(ca),
+            Align::Left,
+        );
+    } else {
+        let r = Rect::new(tx, y, tw, 26.0);
+        hits.push(Hit { r, act: Act::NoteAdd });
+        if hot(a, Act::NoteAdd) {
+            g.fill_rrect(r, 9.0, Color::white(0.07 * ca));
+        }
+        g.icon('\u{E710}', Rect::new(tx, y, 26.0, 26.0), &f.icon14, T3.fade(ca));
+        g.text("Add note", Rect::new(tx + 30.0, y, 140.0, 26.0), &f.small, T3.fade(ca), Align::Left);
+    }
+}
+
+// ---------------------------------------------------------------- status ----
+
+fn ago(secs: i64) -> String {
+    if secs < 60 {
+        "just now".into()
+    } else if secs < 3600 {
+        format!("{} min ago", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} h ago", secs / 3600)
+    } else {
+        format!("{} d ago", secs / 86_400)
+    }
+}
+
+fn left_text(mins: i32) -> String {
+    if mins >= 60 {
+        format!("{}h {:02}m left", mins / 60, mins % 60)
+    } else {
+        format!("{} min left", mins)
+    }
+}
+
+/// 3D printer on the left, House of Madese orders on the right.
+fn page_status(a: &App, ca: f32, hits: &mut Vec<Hit>) {
+    let g = &a.gfx;
+    let f = &g.fonts;
+    let (print, perr, orders, oerr) = {
+        let s = a.net.state.lock().unwrap();
+        (s.print.clone(), s.print_err.clone(), s.orders.clone(), s.orders_err.clone())
+    };
+
+    // ---- printer
+    g.text("Printer", Rect::new(28.0, 12.0, 150.0, 22.0), &f.small, T3.fade(ca), Align::Left);
+    let rb = Rect::new(196.0, 10.0, 26.0, 26.0);
+    hits.push(Hit { r: rb, act: Act::StatusRefresh });
+    g.icon('\u{E72C}', rb, &f.icon14, (if hot(a, Act::StatusRefresh) { T1 } else { T3 }).fade(ca));
+    let x = 28.0;
+    if a.cfg.print_url.is_empty() {
+        g.text("Not set up", Rect::new(x, 44.0, 260.0, 24.0), &f.body, T2.fade(ca), Align::Left);
+        g.text(
+            "Set print_url in config.ini to the agent's\nstatus address (tray \u{2192} Open settings folder).",
+            Rect::new(x, 72.0, 270.0, 44.0),
+            &f.tiny,
+            T3.fade(ca),
+            Align::Left,
+        );
+    } else if let Some(p) = &print {
+        let (label, col) = match p.state.as_str() {
+            "RUNNING" => ("Printing", Color(0.35, 0.85, 0.5, 1.0)),
+            "PREPARE" | "SLICING" => ("Preparing", Color(0.35, 0.85, 0.5, 1.0)),
+            "PAUSE" => ("Paused", Color(1.0, 0.75, 0.3, 1.0)),
+            "FINISH" => ("Finished", a.accent),
+            "FAILED" => ("Failed", Color(1.0, 0.4, 0.4, 1.0)),
+            "IDLE" | "" => ("Idle", T2),
+            _ => (p.state.as_str(), T2),
+        };
+        g.fill_circle(x + 5.0, 54.0, 4.0, col.fade(ca));
+        let stale = if perr.is_some() { "  (offline)" } else { "" };
+        g.text(&format!("{}{}", label, stale), Rect::new(x + 16.0, 42.0, 240.0, 24.0), &f.body, T1.fade(ca), Align::Left);
+        if !p.job.is_empty() {
+            g.text(&trunc(&p.job, 36), Rect::new(x, 68.0, 262.0, 20.0), &f.small, T2.fade(ca), Align::Left);
+        }
+        let active = matches!(p.state.as_str(), "RUNNING" | "PREPARE" | "PAUSE");
+        let frac = if p.state == "FINISH" { 1.0 } else { (p.progress as f32 / 100.0).clamp(0.0, 1.0) };
+        if active || p.state == "FINISH" {
+            let bar = Rect::new(x, 96.0, 214.0, 8.0);
+            g.fill_rrect(bar, 4.0, Color::white(0.10 * ca));
+            if frac > 0.0 {
+                g.fill_rrect(Rect::new(bar.x, bar.y, (bar.w * frac).max(8.0), bar.h), 4.0, col.fade(ca));
+            }
+            g.text(
+                &format!("{}%", (frac * 100.0).round() as i32),
+                Rect::new(bar.x + bar.w + 6.0, 90.0, 50.0, 20.0),
+                &f.small,
+                T1.fade(ca),
+                Align::Left,
+            );
+            if active && p.remaining_min > 0 {
+                g.text(&left_text(p.remaining_min), Rect::new(x, 110.0, 130.0, 20.0), &f.small, T2.fade(ca), Align::Left);
+            }
+            if p.total_layers > 0 {
+                g.text(
+                    &format!("Layer {}/{}", p.layer, p.total_layers),
+                    Rect::new(x + 130.0, 110.0, 132.0, 20.0),
+                    &f.small,
+                    T3.fade(ca),
+                    Align::Right,
+                );
+            }
+        }
+        g.text(
+            &format!("Nozzle {}\u{00B0}   Bed {}\u{00B0}", p.nozzle, p.bed),
+            Rect::new(x, 134.0, 262.0, 20.0),
+            &f.small,
+            T2.fade(ca),
+            Align::Left,
+        );
+        if p.needs_confirmation {
+            g.text("Clear the bed to continue", Rect::new(x, 158.0, 262.0, 20.0), &f.small, Color(1.0, 0.75, 0.3, 1.0).fade(ca), Align::Left);
+        }
+    } else if let Some(e) = perr {
+        g.text("Offline", Rect::new(x, 44.0, 260.0, 24.0), &f.body, T2.fade(ca), Align::Left);
+        g.text(&trunc(&e, 48), Rect::new(x, 70.0, 270.0, 20.0), &f.tiny, T3.fade(ca), Align::Left);
+        g.text(
+            "Is the agent running, and is Tailscale on?",
+            Rect::new(x, 90.0, 270.0, 20.0),
+            &f.tiny,
+            T3.fade(ca),
+            Align::Left,
+        );
+    } else {
+        g.text("Checking\u{2026}", Rect::new(x, 44.0, 260.0, 24.0), &f.body, T3.fade(ca), Align::Left);
+    }
+
+    // ---- store
+    let tx = 372.0;
+    g.text("House of Madese", Rect::new(tx, 12.0, 200.0, 22.0), &f.small, T3.fade(ca), Align::Left);
+    if a.cfg.orders_url.is_empty() {
+        g.text("Not set up", Rect::new(tx, 44.0, 200.0, 24.0), &f.body, T2.fade(ca), Align::Left);
+        g.text(
+            "Set orders_url and orders_key\nin config.ini to see new\norders here.",
+            Rect::new(tx, 72.0, 200.0, 60.0),
+            &f.tiny,
+            T3.fade(ca),
+            Align::Left,
+        );
+    } else if let Some(o) = &orders {
+        g.text(&o.today.to_string(), Rect::new(tx, 32.0, 90.0, 52.0), &f.big, a.accent.fade(ca), Align::Left);
+        g.text(
+            if o.today == 1 { "order today" } else { "orders today" },
+            Rect::new(tx + 56.0, 50.0, 144.0, 24.0),
+            &f.body,
+            T1.fade(ca),
+            Align::Left,
+        );
+        g.text(&format!("{} orders in total", o.total), Rect::new(tx, 90.0, 200.0, 20.0), &f.small, T2.fade(ca), Align::Left);
+        if let Some(t) = crate::net::parse_iso(&o.latest_at) {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(t);
+            g.text(
+                &format!("Latest: \u{20B9}{} \u{00B7} {}", o.latest_total.round() as i64, ago((now - t).max(0))),
+                Rect::new(tx, 112.0, 200.0, 20.0),
+                &f.small,
+                T2.fade(ca),
+                Align::Left,
+            );
+        }
+        if oerr.is_some() {
+            g.text("(offline, showing last data)", Rect::new(tx, 134.0, 200.0, 20.0), &f.tiny, T3.fade(ca), Align::Left);
+        }
+    } else if let Some(e) = oerr {
+        let msg = if e == "Unauthorized" { "Wrong orders_key".to_string() } else { "Can't reach the store".to_string() };
+        g.text(&msg, Rect::new(tx, 44.0, 200.0, 24.0), &f.body, T2.fade(ca), Align::Left);
+        g.text(&trunc(&e, 34), Rect::new(tx, 70.0, 200.0, 20.0), &f.tiny, T3.fade(ca), Align::Left);
+    } else {
+        g.text("Checking\u{2026}", Rect::new(tx, 44.0, 200.0, 24.0), &f.body, T3.fade(ca), Align::Left);
+    }
 }
 
 fn draw_calendar(a: &App, ca: f32) {

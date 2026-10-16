@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Notes page: pinned snippets (click to paste) and quick notes (Ctrl+Alt+Q).
+- Status page: optional printer status feed and store order feed, with buddy alerts (`print_url`, `orders_url`, `orders_key`).
+- Buddy break reminders (`nudge_min`, tray toggle).
+- Clicking the buddy plays a short synthesised sound, different for each character.
+- New pixel buddy: the Smiling Man (tray menu → Buddy, `buddy=9`), just a face (pixel-art portrait) that strolls along the bar and talks. A second face buddy, Amit (`buddy=10`).
+
 ## 0.2.1
 
 - Fight scenes: use the stretch left of the notch when the right side is too narrow; say so when there is no room.
